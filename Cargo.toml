@@ -12,3 +12,6 @@ futures = "0.3.31"
 ratatui = "0.29.0"
 tokio = { version = "1.40.0", features = ["full"] }
 color-eyre = "0.6.3"
+minesweeper-client = { git = "https://github.com/WithoutAName25/minesweeper.git" }
+tracing-subscriber = "0.3.20"
+tracing = "0.1.41"

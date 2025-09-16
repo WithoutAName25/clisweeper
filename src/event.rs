@@ -1,21 +1,12 @@
 use color_eyre::eyre::OptionExt;
 use futures::{FutureExt, StreamExt};
+use minesweeper_client::{GameEvent, GameParams, Pos};
 use ratatui::crossterm::event::Event as CrosstermEvent;
-use std::time::Duration;
 use tokio::sync::mpsc;
-
-/// The frequency at which tick events are emitted.
-const TICK_FPS: f64 = 30.0;
 
 /// Representation of all possible events.
 #[derive(Clone, Debug)]
 pub enum Event {
-    /// An event that is emitted on a regular schedule.
-    ///
-    /// Use this event to run any code which has to run outside of being a direct response to a user
-    /// event. e.g. polling exernal systems, updating animations, or rendering the UI based on a
-    /// fixed frame rate.
-    Tick,
     /// Crossterm events.
     ///
     /// These events are emitted by the terminal.
@@ -24,23 +15,42 @@ pub enum Event {
     ///
     /// Use this event to emit custom events that are specific to your application.
     App(AppEvent),
+    /// Game events.
+    ///
+    /// Events received from the minesweeper server.
+    Game(GameEvent),
 }
 
 /// Application events.
-///
-/// You can extend this enum with your own custom events.
 #[derive(Clone, Debug)]
 pub enum AppEvent {
-    /// Increment the counter.
-    Increment,
-    /// Decrement the counter.
-    Decrement,
+    Start(GameParams),
+    Join(String),
+    Reveal(Pos),
+    Flag(Pos),
+    Restart(GameParams),
+    KeyAction(KeyAction),
     /// Quit the application.
     Quit,
 }
 
+#[derive(Clone, Debug)]
+pub enum KeyAction {
+    Left,
+    Right,
+    Up,
+    Down,
+    Accept,
+    Cancel,
+    Space,
+    Backspace,
+    Digit(char),
+    Input(char),
+    Settings,
+    JoinMenu,
+}
+
 /// Terminal event handler.
-#[derive(Debug)]
 pub struct EventHandler {
     /// Event sender channel.
     sender: mpsc::UnboundedSender<Event>,
@@ -50,9 +60,9 @@ pub struct EventHandler {
 
 impl EventHandler {
     /// Constructs a new instance of [`EventHandler`] and spawns a new thread to handle events.
-    pub fn new() -> Self {
+    pub fn new(game_events: mpsc::UnboundedReceiver<GameEvent>) -> Self {
         let (sender, receiver) = mpsc::unbounded_channel();
-        let actor = EventTask::new(sender.clone());
+        let actor = EventTask::new(game_events, sender.clone());
         tokio::spawn(async { actor.run().await });
         Self { sender, receiver }
     }
@@ -86,36 +96,42 @@ impl EventHandler {
 
 /// A thread that handles reading crossterm events and emitting tick events on a regular schedule.
 struct EventTask {
+    /// Game event receive channel.
+    game_events: mpsc::UnboundedReceiver<GameEvent>,
     /// Event sender channel.
     sender: mpsc::UnboundedSender<Event>,
 }
 
 impl EventTask {
     /// Constructs a new instance of [`EventThread`].
-    fn new(sender: mpsc::UnboundedSender<Event>) -> Self {
-        Self { sender }
+    fn new(
+        game_events: mpsc::UnboundedReceiver<GameEvent>,
+        sender: mpsc::UnboundedSender<Event>,
+    ) -> Self {
+        Self {
+            game_events,
+            sender,
+        }
     }
 
     /// Runs the event thread.
     ///
     /// This function emits tick events at a fixed rate and polls for crossterm events in between.
-    async fn run(self) -> color_eyre::Result<()> {
-        let tick_rate = Duration::from_secs_f64(1.0 / TICK_FPS);
+    async fn run(mut self) -> color_eyre::Result<()> {
         let mut reader = crossterm::event::EventStream::new();
-        let mut tick = tokio::time::interval(tick_rate);
         loop {
-            let tick_delay = tick.tick();
             let crossterm_event = reader.next().fuse();
+            let game_event = self.game_events.recv().fuse();
             tokio::select! {
-              _ = self.sender.closed() => {
-                break;
-              }
-              _ = tick_delay => {
-                self.send(Event::Tick);
-              }
-              Some(Ok(evt)) = crossterm_event => {
-                self.send(Event::Crossterm(evt));
-              }
+                _ = self.sender.closed() => {
+                    break;
+                }
+                Some(Ok(evt)) = crossterm_event => {
+                    self.send(Event::Crossterm(evt));
+                }
+                Some(evt) = game_event => {
+                    self.send(Event::Game(evt));
+                }
             };
         }
         Ok(())
