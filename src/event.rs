@@ -46,8 +46,9 @@ pub enum KeyAction {
     Backspace,
     Digit(char),
     Input(char),
-    Settings,
+    Parameters,
     JoinMenu,
+    Restart,
 }
 
 /// Terminal event handler.

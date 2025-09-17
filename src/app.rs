@@ -17,16 +17,12 @@ use ratatui::{
 pub struct App {
     /// Is the application running?
     pub running: bool,
-    /// Is settings menu open, which property is selected
     pub menu_state: MenuState,
     pub input_buffer: String,
-    /// Game settings.
     pub params: GameParams,
     /// Game instance.
     pub game: MinesweeperGame,
-    /// selected pos
     pub selected: Pos,
-    /// Event handler.
     pub events: EventHandler,
 }
 
@@ -114,12 +110,10 @@ impl App {
                             .map_err(|err| eyre!("Failed to send request: {}", err))?;
                     }
                     AppEvent::KeyAction(action) => match action {
-                        KeyAction::Left => match self.menu_state {
+                        KeyAction::Left => match &mut self.menu_state {
                             MenuState::Closed => self.modify_selection(-1, 0).await,
-                            MenuState::Parameters {
-                                modify: _,
-                                ref mut selection,
-                            } => match selection {
+                            MenuState::Parameters { selection, modify } => match selection {
+                                _ if *modify => {}
                                 ParameterSelections::Width => {
                                     self.params.width = self.params.width.saturating_sub(1)
                                 }
@@ -136,13 +130,10 @@ impl App {
                             },
                             _ => {}
                         },
-
-                        KeyAction::Right => match self.menu_state {
+                        KeyAction::Right => match &mut self.menu_state {
                             MenuState::Closed => self.modify_selection(1, 0).await,
-                            MenuState::Parameters {
-                                modify: _,
-                                ref mut selection,
-                            } => match selection {
+                            MenuState::Parameters { selection, modify } => match selection {
+                                _ if *modify => {}
                                 ParameterSelections::Width => {
                                     self.params.width = self.params.width.saturating_add(1)
                                 }
@@ -159,12 +150,10 @@ impl App {
                             },
                             _ => {}
                         },
-                        KeyAction::Up => match self.menu_state {
+                        KeyAction::Up => match &mut self.menu_state {
                             MenuState::Closed => self.modify_selection(0, -1).await,
-                            MenuState::Parameters {
-                                modify: _,
-                                ref mut selection,
-                            } => match selection {
+                            MenuState::Parameters { selection, modify } => match selection {
+                                _ if *modify => {}
                                 ParameterSelections::Height => {
                                     *selection = ParameterSelections::Width
                                 }
@@ -181,12 +170,10 @@ impl App {
                             },
                             _ => {}
                         },
-                        KeyAction::Down => match self.menu_state {
+                        KeyAction::Down => match &mut self.menu_state {
                             MenuState::Closed => self.modify_selection(0, 1).await,
-                            MenuState::Parameters {
-                                modify: _,
-                                ref mut selection,
-                            } => match selection {
+                            MenuState::Parameters { selection, modify } => match selection {
+                                _ if *modify => {}
                                 ParameterSelections::Width => {
                                     *selection = ParameterSelections::Height
                                 }
@@ -200,16 +187,13 @@ impl App {
                             },
                             _ => {}
                         },
-                        KeyAction::Accept => match self.menu_state {
+                        KeyAction::Accept => match &mut self.menu_state {
                             MenuState::Closed => {
                                 if self.game.is_connected().await {
                                     self.events.send(AppEvent::Reveal(self.selected))
                                 }
                             }
-                            MenuState::Parameters {
-                                ref mut modify,
-                                ref mut selection,
-                            } => match selection {
+                            MenuState::Parameters { modify, selection } => match selection {
                                 ParameterSelections::Width => {
                                     if *modify {
                                         if let Ok(value) = self.input_buffer.parse() {
@@ -251,7 +235,7 @@ impl App {
                                 ParameterSelections::Cancel => self.menu_state = MenuState::Closed,
                             },
                             MenuState::Join => {
-                                match self.game.join_game(self.input_buffer.clone()).await {
+                                match &self.game.join_game(self.input_buffer.clone()).await {
                                     Ok(_) => self.menu_state = MenuState::Closed,
                                     Err(_) => {
                                         self.menu_state = MenuState::InfoMessage(
@@ -262,12 +246,9 @@ impl App {
                             }
                             MenuState::InfoMessage(_) => self.menu_state = MenuState::Closed,
                         },
-                        KeyAction::Cancel => match self.menu_state {
+                        KeyAction::Cancel => match &mut self.menu_state {
                             MenuState::Closed => self.events.send(AppEvent::Quit),
-                            MenuState::Parameters {
-                                ref mut modify,
-                                selection: _,
-                            } if *modify => *modify = false,
+                            MenuState::Parameters { modify, .. } if *modify => *modify = false,
                             _ => self.menu_state = MenuState::Closed,
                         },
                         KeyAction::Space => {
@@ -275,7 +256,7 @@ impl App {
                                 self.events.send(AppEvent::Flag(self.selected))
                             }
                         }
-                        KeyAction::Backspace => match self.menu_state {
+                        KeyAction::Backspace => match &self.menu_state {
                             MenuState::Parameters { modify: true, .. } | MenuState::Join => {
                                 self.input_buffer.pop();
                             }
@@ -291,7 +272,7 @@ impl App {
                                 self.input_buffer.push(c);
                             }
                         }
-                        KeyAction::Settings => match self.menu_state {
+                        KeyAction::Parameters => match &self.menu_state {
                             MenuState::Closed => {
                                 self.menu_state = MenuState::Parameters {
                                     modify: false,
@@ -304,13 +285,24 @@ impl App {
                             } => self.menu_state = MenuState::Closed,
                             _ => {}
                         },
-                        KeyAction::JoinMenu => match self.menu_state {
+                        KeyAction::JoinMenu => match &self.menu_state {
                             MenuState::Closed => {
                                 self.menu_state = MenuState::Join;
                                 self.input_buffer = "".to_string()
                             }
                             MenuState::Join => self.menu_state = MenuState::Closed,
                             _ => {}
+                        },
+                        KeyAction::Restart => match &self.menu_state {
+                            MenuState::Closed | MenuState::InfoMessage(_) => {
+                                if self.game.is_connected().await {
+                                    self.events.send(AppEvent::Restart(self.params))
+                                } else {
+                                    self.events.send(AppEvent::Start(self.params))
+                                }
+                                self.menu_state = MenuState::Closed
+                            }
+                            _ => (),
                         },
                     },
                     AppEvent::Quit => self.quit(),
@@ -357,16 +349,16 @@ impl App {
             KeyCode::Char(c) if self.menu_state == MenuState::Join => {
                 self.events.send(AppEvent::KeyAction(KeyAction::Input(c)));
             }
-            KeyCode::Left | KeyCode::Char('a') => {
+            KeyCode::Left | KeyCode::Char('a' | 'h') => {
                 self.events.send(AppEvent::KeyAction(KeyAction::Left))
             }
-            KeyCode::Right | KeyCode::Char('d') => {
+            KeyCode::Right | KeyCode::Char('d' | 'l') => {
                 self.events.send(AppEvent::KeyAction(KeyAction::Right))
             }
-            KeyCode::Up | KeyCode::Char('w') => {
+            KeyCode::Up | KeyCode::Char('w' | 'k') => {
                 self.events.send(AppEvent::KeyAction(KeyAction::Up))
             }
-            KeyCode::Down | KeyCode::Char('s') => {
+            KeyCode::Down | KeyCode::Char('s' | 'j') => {
                 self.events.send(AppEvent::KeyAction(KeyAction::Down))
             }
             KeyCode::Enter => self.events.send(AppEvent::KeyAction(KeyAction::Accept)),
@@ -375,8 +367,9 @@ impl App {
             }
             KeyCode::Char(' ') => self.events.send(AppEvent::KeyAction(KeyAction::Space)),
             KeyCode::Backspace => self.events.send(AppEvent::KeyAction(KeyAction::Backspace)),
-            KeyCode::Char('p') => self.events.send(AppEvent::KeyAction(KeyAction::Settings)),
-            KeyCode::Char('j') => self.events.send(AppEvent::KeyAction(KeyAction::JoinMenu)),
+            KeyCode::Char('p') => self.events.send(AppEvent::KeyAction(KeyAction::Parameters)),
+            KeyCode::Char('g') => self.events.send(AppEvent::KeyAction(KeyAction::JoinMenu)),
+            KeyCode::Char('r') => self.events.send(AppEvent::KeyAction(KeyAction::Restart)),
             KeyCode::Char(c) => {
                 if c.is_ascii_digit() {
                     self.events.send(AppEvent::KeyAction(KeyAction::Digit(c)))
@@ -428,16 +421,14 @@ impl App {
 
             paragraph.render(game_area, frame.buffer_mut());
 
-            let line = Line::from(vec![
-                Span::raw("Game ID: ").fg(Color::Gray),
+            let mut spans = vec![
+                Span::raw("game id: ").fg(Color::Gray),
                 Span::raw(game_id.unwrap_or("".to_string())).fg(Color::Cyan),
-                Span::raw(
-                    " | ←↓↑→: move selection | ↵: reveal cell | _: mark cell | p: parameters menu | j: join game with id | q: quit",
-                )
-                .fg(Color::Gray),
-            ])
-            .centered();
+            ];
 
+            self.add_keybinding_hints(&mut spans);
+
+            let line = Line::from(spans).centered();
             line.render(info_area, frame.buffer_mut());
 
             match &self.menu_state {
@@ -461,6 +452,62 @@ impl App {
             }
         })?;
         Ok(())
+    }
+
+    fn add_keybinding_hints(&self, spans: &mut Vec<Span<'static>>) {
+        spans.extend_from_slice(&[]);
+        match &self.menu_state {
+            MenuState::Closed => {
+                Self::add_keybinding_hint(spans, "←↓↑→", "move selection");
+                Self::add_keybinding_hint(spans, "↵", "reveal");
+                Self::add_keybinding_hint(spans, "space", "mark");
+                Self::add_keybinding_hint(spans, "p", "parameters");
+                Self::add_keybinding_hint(spans, "g", "join game");
+                Self::add_keybinding_hint(spans, "r", "restart");
+                Self::add_keybinding_hint(spans, "q", "quit");
+            }
+            MenuState::Parameters { modify, selection } => match selection {
+                ParameterSelections::Apply => {
+                    Self::add_keybinding_hint(spans, "←↓↑→", "move selection");
+                    Self::add_keybinding_hint(spans, "↵", "apply");
+                }
+                ParameterSelections::Cancel => {
+                    Self::add_keybinding_hint(spans, "←↓↑→", "move selection");
+                    Self::add_keybinding_hint(spans, "↵", "cancel");
+                }
+                _ if *modify => {
+                    Self::add_keybinding_hint(spans, "esc", "cancel");
+                    Self::add_keybinding_hint(spans, "↵", "accept value");
+                }
+                _ => {
+                    Self::add_keybinding_hint(spans, "↓↑", "move selection");
+                    Self::add_keybinding_hint(spans, "←", "decrease value");
+                    Self::add_keybinding_hint(spans, "↵", "modify value");
+                    Self::add_keybinding_hint(spans, "→", "increase value");
+                }
+            },
+            MenuState::Join => {
+                Self::add_keybinding_hint(spans, "esc", "cancel");
+                Self::add_keybinding_hint(spans, "↵", "join game");
+            }
+            MenuState::InfoMessage(_) => {
+                Self::add_keybinding_hint(spans, "r", "restart");
+                Self::add_keybinding_hint(spans, "↵", "ok");
+            }
+        }
+    }
+
+    fn add_keybinding_hint(
+        spans: &mut Vec<Span<'static>>,
+        key: &'static str,
+        action: &'static str,
+    ) {
+        spans.extend_from_slice(&[
+            Span::raw(" | ").fg(Color::Gray),
+            Span::raw(key).fg(Color::Cyan),
+            Span::raw(" ").fg(Color::Gray),
+            Span::raw(action).fg(Color::Gray),
+        ]);
     }
 
     async fn render_game(&self) -> Text<'_> {
